@@ -382,15 +382,14 @@ with gr.Blocks(title="Lecture Recorder Notes", js=SEEKTIME_JS) as demo:
 
     run_button = gr.Button("Transcribe and create notes", variant="primary")
 
-    with gr.Tab("Player"):
-        gr.Markdown("Dùng player này để kiểm tra lại audio/video gốc.")
+    with gr.Tab("Review"):
+        gr.Markdown("Player nằm ngay trên transcript. Click timestamp màu cam để phát lại đúng đoạn.")
         audio_player = gr.Audio(label="Audio player", visible=False)
         video_player = gr.Video(label="Video player", visible=False)
+        clickable_transcript_output = gr.HTML(label="Clickable transcript")
 
     with gr.Tab("Transcript"):
         transcript_output = gr.Textbox(label="Timestamped transcript", lines=18)
-    with gr.Tab("Clickable Transcript"):
-        clickable_transcript_output = gr.HTML(label="Clickable transcript")
     with gr.Tab("Summary"):
         summary_output = gr.Markdown(label="Summary")
     with gr.Tab("Key Terms"):

@@ -65,7 +65,7 @@ The app cannot show exact browser upload percentage before Gradio receives the f
 
 ## Clickable Timestamps
 
-After transcription, open the `Player` tab to load the original audio/video. Then open `Clickable Transcript` and click any orange timestamp to jump the player to that moment.
+After transcription, open the `Review` tab. The original audio/video player appears above the clickable transcript. Click any orange timestamp to jump the player to that moment.
 
 The timestamp is counted from the start of the uploaded audio/video file.
 
