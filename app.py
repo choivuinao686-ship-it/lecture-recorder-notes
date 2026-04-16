@@ -1,0 +1,299 @@
+import os
+import re
+import tempfile
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+import gradio as gr
+
+
+MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
+LEGAL_TERMS = {
+    "act",
+    "appeal",
+    "burden",
+    "case",
+    "civil",
+    "clause",
+    "contract",
+    "court",
+    "criminal",
+    "damages",
+    "defendant",
+    "doctrine",
+    "duty",
+    "evidence",
+    "judgment",
+    "jurisdiction",
+    "liability",
+    "negligence",
+    "offence",
+    "plaintiff",
+    "precedent",
+    "principle",
+    "reasonable",
+    "remedy",
+    "rights",
+    "rule",
+    "section",
+    "statute",
+    "tort",
+}
+
+
+@dataclass
+class TranscriptSegment:
+    start: float
+    end: float
+    text: str
+
+
+def format_time(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def normalize_words(text: str) -> list[str]:
+    return re.findall(r"[a-zA-Z][a-zA-Z'-]{2,}", text.lower())
+
+
+def resolve_media_path(uploaded_file: str | None, drive_path: str | None) -> str:
+    if drive_path and drive_path.strip():
+        cleaned_path = drive_path.strip().strip('"').strip("'")
+        media_path = Path(cleaned_path)
+        if not media_path.is_absolute():
+            media_path = Path("/content/drive/MyDrive") / cleaned_path
+    elif uploaded_file:
+        media_path = Path(uploaded_file)
+    else:
+        raise gr.Error("Upload file audio hoặc nhập đường dẫn file trong Google Drive trước nha.")
+
+    if not media_path.exists():
+        raise gr.Error(f"Không tìm thấy file: {media_path}")
+    if not media_path.is_file():
+        raise gr.Error(f"Đường dẫn này không phải file: {media_path}")
+    return str(media_path)
+
+
+def describe_file(media_path: str) -> str:
+    path = Path(media_path)
+    size_mb = path.stat().st_size / (1024 * 1024)
+    return f"Đã nhận file: `{path.name}` ({size_mb:.1f} MB)"
+
+
+def transcribe_file(media_path: str, progress: gr.Progress) -> list[TranscriptSegment]:
+    from faster_whisper import WhisperModel
+
+    progress(0.05, desc="Đang tải Whisper model...")
+    model = WhisperModel(MODEL_SIZE, device="auto", compute_type="auto")
+    progress(0.15, desc="Đã tải model. Đang bắt đầu nghe file...")
+    segments, info = model.transcribe(
+        media_path,
+        beam_size=5,
+        vad_filter=True,
+        word_timestamps=False,
+    )
+
+    transcript_segments = []
+    duration = max(float(getattr(info, "duration", 0) or 0), 1.0)
+    for item in segments:
+        text = item.text.strip()
+        if text:
+            transcript_segments.append(
+                TranscriptSegment(start=item.start, end=item.end, text=text)
+            )
+
+        done = min(0.9, 0.15 + (float(item.end) / duration) * 0.75)
+        progress(done, desc=f"Đang transcribe... {format_time(item.end)} / {format_time(duration)}")
+
+    progress(0.92, desc="Transcribe xong. Đang tạo transcript...")
+    return transcript_segments
+
+
+def transcript_to_text(segments: list[TranscriptSegment]) -> str:
+    return "\n".join(
+        f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text}"
+        for segment in segments
+    )
+
+
+def score_segments(segments: list[TranscriptSegment]) -> list[tuple[float, TranscriptSegment]]:
+    all_words = normalize_words(" ".join(segment.text for segment in segments))
+    frequencies = Counter(word for word in all_words if len(word) > 3)
+    if not frequencies:
+        return []
+
+    scored = []
+    for segment in segments:
+        words = normalize_words(segment.text)
+        if not words:
+            continue
+        keyword_score = sum(frequencies[word] for word in words) / len(words)
+        legal_bonus = sum(1 for word in words if word in LEGAL_TERMS) * 1.8
+        length_penalty = 0.4 if len(words) < 6 else 0
+        scored.append((keyword_score + legal_bonus - length_penalty, segment))
+    return scored
+
+
+def build_summary(segments: list[TranscriptSegment], max_items: int = 8) -> str:
+    scored = score_segments(segments)
+    if not scored:
+        return "No summary could be generated."
+
+    selected = sorted(scored, key=lambda item: item[0], reverse=True)[:max_items]
+    selected = sorted(selected, key=lambda item: item[1].start)
+
+    bullets = []
+    for _, segment in selected:
+        sentence = segment.text.strip()
+        if not sentence.endswith((".", "?", "!")):
+            sentence += "."
+        bullets.append(f"- [{format_time(segment.start)}] {sentence}")
+    return "\n".join(bullets)
+
+
+def build_key_terms(segments: list[TranscriptSegment], max_terms: int = 20) -> str:
+    words = normalize_words(" ".join(segment.text for segment in segments))
+    useful_words = [
+        word
+        for word in words
+        if len(word) > 4 and word not in {"there", "their", "about", "which", "would", "could"}
+    ]
+    terms = Counter(useful_words).most_common(max_terms)
+    if not terms:
+        return "No key terms found."
+    return ", ".join(term for term, _ in terms)
+
+
+def build_review_notes(segments: list[TranscriptSegment]) -> str:
+    text = " ".join(segment.text for segment in segments)
+    uncertain_markers = ["inaudible", "unknown", "[", "]"]
+    warnings = []
+
+    if any(marker in text.lower() for marker in uncertain_markers):
+        warnings.append("- Review lines with unclear or bracketed words against the original recording.")
+    if len(segments) < 3:
+        warnings.append("- Recording looks very short, so the notes may be incomplete.")
+
+    warnings.append("- For law lectures, verify important wording, case names, statutes, and definitions against the audio.")
+    warnings.append("- Keep the OBS recording as the source of truth; this transcript is an AI-generated working copy.")
+    return "\n".join(warnings)
+
+
+def write_download_file(prefix: str, content: str) -> str:
+    temp_dir = Path(tempfile.mkdtemp(prefix="lecture_notes_"))
+    output_path = temp_dir / f"{prefix}.txt"
+    output_path.write_text(content, encoding="utf-8")
+    return str(output_path)
+
+
+def check_upload_status(media_file: str | None) -> str:
+    if not media_file:
+        return "Chưa có file nào được upload."
+    return describe_file(media_file)
+
+
+def process_recording(
+    media_file: str | None,
+    drive_path: str | None,
+    progress: gr.Progress = gr.Progress(),
+):
+    progress(0.01, desc="Đang kiểm tra file...")
+    media_path = resolve_media_path(media_file, drive_path)
+    status = describe_file(media_path)
+
+    segments = transcribe_file(media_path, progress)
+    if not segments:
+        raise gr.Error("No speech was detected. Check that OBS captured audio.")
+
+    progress(0.94, desc="Đang tạo summary và key terms...")
+    transcript = transcript_to_text(segments)
+    summary = build_summary(segments)
+    key_terms = build_key_terms(segments)
+    review_notes = build_review_notes(segments)
+
+    full_notes = (
+        "LECTURE SUMMARY\n"
+        f"{summary}\n\n"
+        "KEY TERMS\n"
+        f"{key_terms}\n\n"
+        "REVIEW NOTES\n"
+        f"{review_notes}\n\n"
+        "FULL TIMESTAMPED TRANSCRIPT\n"
+        f"{transcript}\n"
+    )
+    download_file = write_download_file("lecture_transcript_and_notes", full_notes)
+    progress(1.0, desc="Xong rồi.")
+
+    return status, transcript, summary, key_terms, review_notes, download_file
+
+
+with gr.Blocks(title="Lecture Recorder Notes") as demo:
+    gr.Markdown(
+        """
+        # Lecture Recorder Notes
+
+        Upload an audio/video recording, or enter a Google Drive file path, then create a timestamped transcript and study notes.
+        Keep the original recording for checking exact legal wording.
+        """
+    )
+
+    gr.Markdown(
+        """
+        **Lưu ý:** tiến độ upload từ máy lên Gradio chỉ hiện sau khi server nhận file xong.
+        Nếu file lớn, cách ổn hơn là để file trong Google Drive rồi nhập đường dẫn Drive bên dưới.
+        """
+    )
+
+    media = gr.File(
+        label="Upload audio/video từ máy",
+        file_types=[".mp3", ".wav", ".m4a", ".mp4", ".mkv", ".webm"],
+        type="filepath",
+    )
+    upload_status = gr.Markdown("Chưa có file nào được upload.")
+
+    drive_path = gr.Textbox(
+        label="Hoặc nhập đường dẫn file trong Google Drive",
+        placeholder='Ví dụ: Lecture Recorder App/test-audio.m4a hoặc /content/drive/MyDrive/Lecture Recorder App/test-audio.m4a',
+    )
+
+    run_button = gr.Button("Transcribe and create notes", variant="primary")
+
+    with gr.Tab("Transcript"):
+        transcript_output = gr.Textbox(label="Timestamped transcript", lines=18)
+    with gr.Tab("Summary"):
+        summary_output = gr.Markdown(label="Summary")
+    with gr.Tab("Key Terms"):
+        terms_output = gr.Textbox(label="Possible important terms", lines=4)
+    with gr.Tab("Review Notes"):
+        review_output = gr.Markdown(label="Review notes")
+
+    download_output = gr.File(label="Download transcript and notes")
+
+    media.change(
+        fn=check_upload_status,
+        inputs=media,
+        outputs=upload_status,
+    )
+
+    run_button.click(
+        fn=process_recording,
+        inputs=[media, drive_path],
+        outputs=[
+            upload_status,
+            transcript_output,
+            summary_output,
+            terms_output,
+            review_output,
+            download_output,
+        ],
+    )
+
+
+if __name__ == "__main__":
+    demo.launch(share=True)
