@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import tempfile
@@ -9,6 +10,28 @@ import gradio as gr
 
 
 MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+SEEKTIME_JS = """
+() => {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-seek-seconds]");
+    if (!button) {
+      return;
+    }
+
+    const seconds = Number(button.dataset.seekSeconds);
+    const players = Array.from(document.querySelectorAll("audio, video"));
+    const player = players.find((item) => item.offsetParent !== null) || players[0];
+
+    if (!player || Number.isNaN(seconds)) {
+      return;
+    }
+
+    player.currentTime = seconds;
+    player.play();
+  });
+}
+"""
 LEGAL_TERMS = {
     "act",
     "appeal",
@@ -122,6 +145,76 @@ def transcript_to_text(segments: list[TranscriptSegment]) -> str:
     )
 
 
+def transcript_to_html(segments: list[TranscriptSegment]) -> str:
+    rows = []
+    for segment in segments:
+        start = html.escape(format_time(segment.start))
+        end = html.escape(format_time(segment.end))
+        text = html.escape(segment.text)
+        rows.append(
+            f"""
+            <div class="transcript-row">
+              <button class="seek-button" data-seek-seconds="{segment.start:.2f}">
+                {start}
+              </button>
+              <span class="transcript-end">{end}</span>
+              <span class="transcript-text">{text}</span>
+            </div>
+            """
+        )
+
+    return (
+        """
+        <style>
+          .transcript-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 8px;
+          }
+
+          .transcript-row {
+            align-items: start;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            display: grid;
+            gap: 8px;
+            grid-template-columns: auto auto 1fr;
+            padding: 10px;
+          }
+
+          .seek-button {
+            background: #f97316;
+            border: 0;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-weight: 700;
+            padding: 5px 9px;
+          }
+
+          .seek-button:hover {
+            background: #ea580c;
+          }
+
+          .transcript-end {
+            color: #6b7280;
+            font-size: 0.92rem;
+            padding-top: 5px;
+          }
+
+          .transcript-text {
+            line-height: 1.55;
+            padding-top: 3px;
+          }
+        </style>
+        <p>Click timestamp màu cam để phát lại đúng đoạn trong player phía trên.</p>
+        <div class="transcript-list">
+        """
+        + "\n".join(rows)
+        + "</div>"
+    )
+
+
 def score_segments(segments: list[TranscriptSegment]) -> list[tuple[float, TranscriptSegment]]:
     all_words = normalize_words(" ".join(segment.text for segment in segments))
     frequencies = Counter(word for word in all_words if len(word) > 3)
@@ -185,6 +278,19 @@ def build_review_notes(segments: list[TranscriptSegment]) -> str:
     return "\n".join(warnings)
 
 
+def media_player_updates(media_path: str):
+    suffix = Path(media_path).suffix.lower()
+    if suffix in VIDEO_EXTENSIONS:
+        return (
+            gr.update(value=media_path, visible=False),
+            gr.update(value=media_path, visible=True),
+        )
+    return (
+        gr.update(value=media_path, visible=True),
+        gr.update(value=None, visible=False),
+    )
+
+
 def write_download_file(prefix: str, content: str) -> str:
     temp_dir = Path(tempfile.mkdtemp(prefix="lecture_notes_"))
     output_path = temp_dir / f"{prefix}.txt"
@@ -213,6 +319,7 @@ def process_recording(
 
     progress(0.94, desc="Đang tạo summary và key terms...")
     transcript = transcript_to_text(segments)
+    clickable_transcript = transcript_to_html(segments)
     summary = build_summary(segments)
     key_terms = build_key_terms(segments)
     review_notes = build_review_notes(segments)
@@ -228,12 +335,23 @@ def process_recording(
         f"{transcript}\n"
     )
     download_file = write_download_file("lecture_transcript_and_notes", full_notes)
+    audio_update, video_update = media_player_updates(media_path)
     progress(1.0, desc="Xong rồi.")
 
-    return status, transcript, summary, key_terms, review_notes, download_file
+    return (
+        status,
+        audio_update,
+        video_update,
+        transcript,
+        clickable_transcript,
+        summary,
+        key_terms,
+        review_notes,
+        download_file,
+    )
 
 
-with gr.Blocks(title="Lecture Recorder Notes") as demo:
+with gr.Blocks(title="Lecture Recorder Notes", js=SEEKTIME_JS) as demo:
     gr.Markdown(
         """
         # Lecture Recorder Notes
@@ -264,8 +382,15 @@ with gr.Blocks(title="Lecture Recorder Notes") as demo:
 
     run_button = gr.Button("Transcribe and create notes", variant="primary")
 
+    with gr.Tab("Player"):
+        gr.Markdown("Dùng player này để kiểm tra lại audio/video gốc.")
+        audio_player = gr.Audio(label="Audio player", visible=False)
+        video_player = gr.Video(label="Video player", visible=False)
+
     with gr.Tab("Transcript"):
         transcript_output = gr.Textbox(label="Timestamped transcript", lines=18)
+    with gr.Tab("Clickable Transcript"):
+        clickable_transcript_output = gr.HTML(label="Clickable transcript")
     with gr.Tab("Summary"):
         summary_output = gr.Markdown(label="Summary")
     with gr.Tab("Key Terms"):
@@ -286,7 +411,10 @@ with gr.Blocks(title="Lecture Recorder Notes") as demo:
         inputs=[media, drive_path],
         outputs=[
             upload_status,
+            audio_player,
+            video_player,
             transcript_output,
+            clickable_transcript_output,
             summary_output,
             terms_output,
             review_output,
@@ -296,4 +424,11 @@ with gr.Blocks(title="Lecture Recorder Notes") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch(
+        share=True,
+        allowed_paths=[
+            str(Path.cwd()),
+            tempfile.gettempdir(),
+            "/content/drive/MyDrive",
+        ],
+    )

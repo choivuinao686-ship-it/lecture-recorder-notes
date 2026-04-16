@@ -8,6 +8,7 @@ A tiny tl;dv-style prototype for OBS recordings. Upload a lecture recording and 
 - review warnings
 - visible processing progress after the app receives the file
 - Google Drive file path input for larger recordings
+- audio/video player with clickable transcript timestamps
 - downloadable `.txt` notes
 
 This version is designed for Google Colab and can run on free Colab, but Colab can disconnect and GPU access is not guaranteed.
@@ -61,6 +62,12 @@ Or enter the full Colab path:
 ```
 
 The app cannot show exact browser upload percentage before Gradio receives the file. Once the file is received, it shows processing progress while loading Whisper, transcribing, and creating notes.
+
+## Clickable Timestamps
+
+After transcription, open the `Player` tab to load the original audio/video. Then open `Clickable Transcript` and click any orange timestamp to jump the player to that moment.
+
+The timestamp is counted from the start of the uploaded audio/video file.
 
 ## Run Locally
 
