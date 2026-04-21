@@ -9,6 +9,7 @@ A tiny tl;dv-style prototype for OBS recordings. Upload a lecture recording and 
 - visible processing progress after the app receives the file
 - Google Drive file browser for larger recordings
 - audio/video player with clickable transcript timestamps
+- clearer media-file error messages
 - downloadable `.txt` notes
 
 This version is designed for Google Colab and can run on free Colab, but Colab can disconnect and GPU access is not guaranteed.

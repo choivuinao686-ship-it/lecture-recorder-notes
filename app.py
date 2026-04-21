@@ -1,6 +1,7 @@
 import html
 import os
 import re
+import subprocess
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
@@ -156,6 +157,36 @@ def describe_file(media_path: str) -> str:
     path = Path(media_path)
     size_mb = path.stat().st_size / (1024 * 1024)
     return f"Đã nhận file: `{path.name}` ({size_mb:.1f} MB)"
+
+
+def validate_media_file(media_path: str) -> None:
+    probe_command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        media_path,
+    ]
+    try:
+        result = subprocess.run(
+            probe_command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise gr.Error("Không thấy ffprobe trong môi trường này, nên app chưa kiểm tra được file media.") from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "ffprobe không đọc được file."
+        raise gr.Error(f"File media này không đọc được: {detail}")
+
+    streams = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    if "audio" not in streams:
+        raise gr.Error("File này không có audio stream, nên app không thể transcribe.")
 
 
 def transcribe_file(media_path: str, progress: gr.Progress) -> list[TranscriptSegment]:
@@ -370,10 +401,17 @@ def process_recording(
     progress(0.01, desc="Đang kiểm tra file...")
     media_path = resolve_media_path(source_mode, media_file, drive_file)
     status = describe_file(media_path)
+    validate_media_file(media_path)
 
-    segments = transcribe_file(media_path, progress)
+    try:
+        segments = transcribe_file(media_path, progress)
+    except gr.Error:
+        raise
+    except Exception as exc:
+        message = str(exc).strip() or exc.__class__.__name__
+        raise gr.Error(f"Lúc transcribe file này bị lỗi: {message}") from exc
     if not segments:
-        raise gr.Error("No speech was detected. Check that OBS captured audio.")
+        raise gr.Error("Không nhận ra speech trong file này. Kiểm tra lại xem audio có tiếng nói rõ không.")
 
     progress(0.94, desc="Đang tạo summary và key terms...")
     transcript = transcript_to_text(segments)
