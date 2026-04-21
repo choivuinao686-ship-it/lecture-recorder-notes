@@ -7,7 +7,7 @@ A tiny tl;dv-style prototype for OBS recordings. Upload a lecture recording and 
 - possible important legal terms
 - review warnings
 - visible processing progress after the app receives the file
-- Google Drive file path input for larger recordings
+- Google Drive file browser for larger recordings
 - audio/video player with clickable transcript timestamps
 - downloadable `.txt` notes
 
@@ -49,17 +49,12 @@ If the file is here:
 My Drive / Lecture Recorder App / test-audio.m4a
 ```
 
-Enter this in the app's Google Drive path box:
+In the app:
 
-```text
-Lecture Recorder App/test-audio.m4a
-```
-
-Or enter the full Colab path:
-
-```text
-/content/drive/MyDrive/Lecture Recorder App/test-audio.m4a
-```
+1. Choose `Google Drive` as the file source.
+2. Set the Drive folder to `Lecture Recorder App`.
+3. Click `Quet file Google Drive`.
+4. Pick `test-audio.m4a` from the dropdown.
 
 The app cannot show exact browser upload percentage before Gradio receives the file. Once the file is received, it shows processing progress while loading Whisper, transcribing, and creating notes.
 

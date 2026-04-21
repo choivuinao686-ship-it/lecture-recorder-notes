@@ -11,6 +11,9 @@ import gradio as gr
 
 MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+MEDIA_EXTENSIONS = {".mp3", ".wav", ".m4a", ".mp4", ".mkv", ".webm", ".mov", ".avi"}
+DEFAULT_DRIVE_ROOT = Path("/content/drive/MyDrive")
+DEFAULT_DRIVE_FOLDER = "Lecture Recorder App"
 SEEKTIME_JS = """
 () => {
   document.addEventListener("click", (event) => {
@@ -85,16 +88,62 @@ def normalize_words(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z][a-zA-Z'-]{2,}", text.lower())
 
 
-def resolve_media_path(uploaded_file: str | None, drive_path: str | None) -> str:
-    if drive_path and drive_path.strip():
-        cleaned_path = drive_path.strip().strip('"').strip("'")
-        media_path = Path(cleaned_path)
+def resolve_drive_folder(drive_folder: str | None) -> Path:
+    cleaned_folder = (drive_folder or "").strip().strip('"').strip("'")
+    if not cleaned_folder:
+        cleaned_folder = DEFAULT_DRIVE_FOLDER
+
+    folder_path = Path(cleaned_folder)
+    if not folder_path.is_absolute():
+        folder_path = DEFAULT_DRIVE_ROOT / cleaned_folder
+    return folder_path
+
+
+def list_drive_media_files(drive_folder: str | None) -> list[str]:
+    folder_path = resolve_drive_folder(drive_folder)
+    if not folder_path.exists() or not folder_path.is_dir():
+        return []
+
+    files = []
+    for path in folder_path.rglob("*"):
+        if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS:
+            try:
+                relative = path.relative_to(DEFAULT_DRIVE_ROOT)
+                files.append(str(relative).replace("\\", "/"))
+            except ValueError:
+                files.append(str(path))
+    return sorted(files)
+
+
+def refresh_drive_files(drive_folder: str | None):
+    folder_path = resolve_drive_folder(drive_folder)
+    files = list_drive_media_files(drive_folder)
+
+    if not folder_path.exists():
+        message = f"Chưa thấy folder Google Drive: `{folder_path}`"
+    elif not files:
+        message = f"Không thấy file audio/video nào trong `{folder_path}`"
+    else:
+        message = f"Tìm thấy {len(files)} file trong `{folder_path}`"
+
+    return gr.update(choices=files, value=(files[0] if files else None)), message
+
+
+def resolve_media_path(
+    source_mode: str,
+    uploaded_file: str | None,
+    drive_file: str | None,
+) -> str:
+    if source_mode == "Google Drive":
+        if not drive_file:
+            raise gr.Error("Chọn file từ danh sách Google Drive trước nha.")
+        media_path = Path(drive_file)
         if not media_path.is_absolute():
-            media_path = Path("/content/drive/MyDrive") / cleaned_path
+            media_path = DEFAULT_DRIVE_ROOT / drive_file
     elif uploaded_file:
         media_path = Path(uploaded_file)
     else:
-        raise gr.Error("Upload file audio hoặc nhập đường dẫn file trong Google Drive trước nha.")
+        raise gr.Error("Upload file audio/video từ máy trước nha.")
 
     if not media_path.exists():
         raise gr.Error(f"Không tìm thấy file: {media_path}")
@@ -304,13 +353,22 @@ def check_upload_status(media_file: str | None) -> str:
     return describe_file(media_file)
 
 
+def update_source_visibility(source_mode: str):
+    use_upload = source_mode == "Upload từ máy"
+    return (
+        gr.update(visible=use_upload),
+        gr.update(visible=not use_upload),
+    )
+
+
 def process_recording(
+    source_mode: str,
     media_file: str | None,
-    drive_path: str | None,
+    drive_file: str | None,
     progress: gr.Progress = gr.Progress(),
 ):
     progress(0.01, desc="Đang kiểm tra file...")
-    media_path = resolve_media_path(media_file, drive_path)
+    media_path = resolve_media_path(source_mode, media_file, drive_file)
     status = describe_file(media_path)
 
     segments = transcribe_file(media_path, progress)
@@ -368,17 +426,34 @@ with gr.Blocks(title="Lecture Recorder Notes", js=SEEKTIME_JS) as demo:
         """
     )
 
-    media = gr.File(
-        label="Upload audio/video từ máy",
-        file_types=[".mp3", ".wav", ".m4a", ".mp4", ".mkv", ".webm"],
-        type="filepath",
+    source_mode = gr.Radio(
+        ["Upload từ máy", "Google Drive"],
+        value="Upload từ máy",
+        label="Nguồn file",
     )
-    upload_status = gr.Markdown("Chưa có file nào được upload.")
 
-    drive_path = gr.Textbox(
-        label="Hoặc nhập đường dẫn file trong Google Drive",
-        placeholder='Ví dụ: Lecture Recorder App/test-audio.m4a hoặc /content/drive/MyDrive/Lecture Recorder App/test-audio.m4a',
-    )
+    with gr.Group(visible=True) as upload_group:
+        media = gr.File(
+            label="Upload audio/video từ máy",
+            file_types=sorted(MEDIA_EXTENSIONS),
+            type="filepath",
+        )
+        upload_status = gr.Markdown("Chưa có file nào được upload.")
+
+    with gr.Group(visible=False) as drive_group:
+        drive_folder = gr.Textbox(
+            label="Folder Google Drive để quét file",
+            value=DEFAULT_DRIVE_FOLDER,
+            placeholder='Ví dụ: Lecture Recorder App hoặc /content/drive/MyDrive/Lecture Recorder App',
+        )
+        with gr.Row():
+            refresh_drive_button = gr.Button("Quét file Google Drive")
+            drive_scan_status = gr.Markdown("Bấm nút quét để app lấy danh sách file từ Drive.")
+        drive_file = gr.Dropdown(
+            label="Chọn file từ Google Drive",
+            choices=[],
+            allow_custom_value=False,
+        )
 
     run_button = gr.Button("Transcribe and create notes", variant="primary")
 
@@ -405,9 +480,21 @@ with gr.Blocks(title="Lecture Recorder Notes", js=SEEKTIME_JS) as demo:
         outputs=upload_status,
     )
 
+    source_mode.change(
+        fn=update_source_visibility,
+        inputs=source_mode,
+        outputs=[upload_group, drive_group],
+    )
+
+    refresh_drive_button.click(
+        fn=refresh_drive_files,
+        inputs=drive_folder,
+        outputs=[drive_file, drive_scan_status],
+    )
+
     run_button.click(
         fn=process_recording,
-        inputs=[media, drive_path],
+        inputs=[source_mode, media, drive_file],
         outputs=[
             upload_status,
             audio_player,
