@@ -95,3 +95,23 @@ python app.py
 ## Important Law Lecture Warning
 
 The transcript is AI-generated. It can be wrong. For legal study, always verify exact words, case names, statutes, and definitions against the original recording.
+
+## Quiz App
+
+This repository now also includes a separate multiple-select quiz app for importing question banks from raw text.
+
+Features:
+
+- import one 30-question quiz from pasted raw text
+- supports multiple correct answers per question
+- stores up to 6 quiz sets as local JSON files
+- grades only exact matches for multiple-select answers
+- saves wrong answers and supports review mode for mistakes
+
+Run it locally:
+
+```powershell
+python quiz_app.py
+```
+
+Imported quiz files are stored in `data/quizzes/` and mistake history is stored in `data/progress/wrong_answers.json`.
