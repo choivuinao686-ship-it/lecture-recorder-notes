@@ -102,11 +102,13 @@ This repository now also includes a separate multiple-select quiz app for import
 
 Features:
 
-- import one 30-question quiz from pasted raw text
+- import raw text into one of 6 quiz slots
 - supports multiple correct answers per question
-- stores up to 6 quiz sets as local JSON files
+- stores 6 quiz sets as local JSON files
 - grades only exact matches for multiple-select answers
 - saves wrong answers and supports review mode for mistakes
+- shows a progress dashboard for all 6 quizzes
+- lets you clear a quiz's saved wrong-answer list after review
 
 Run it locally:
 

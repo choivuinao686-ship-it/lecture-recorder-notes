@@ -4,10 +4,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
+QUIZ_SLOT_COUNT = 6
+QUESTION_COUNT = 30
+CHOICE_LABELS = ("A", "B", "C", "D")
+
 DATA_DIR = Path("data")
 QUIZ_DIR = DATA_DIR / "quizzes"
 PROGRESS_DIR = DATA_DIR / "progress"
 WRONG_ANSWERS_FILE = PROGRESS_DIR / "wrong_answers.json"
+QUIZ_ID_RANGE = range(1, QUIZ_SLOT_COUNT + 1)
 
 
 @dataclass
@@ -55,9 +60,11 @@ def _extract_question_sections(question_text: str) -> list[tuple[int, str]]:
 
 
 def _extract_options(question_body: str) -> tuple[str, dict[str, str]]:
-    option_pattern = re.compile(r"(?ms)^\s*([ABCD])\.\s*(.*?)(?=^\s*[ABCD]\.\s|\Z)")
+    option_pattern = re.compile(
+        r"(?ms)^\s*([ABCD])(?:\.|\)|\s+-)\s*(.*?)(?=^\s*[ABCD](?:\.|\)|\s+-)\s|\Z)"
+    )
     matches = list(option_pattern.finditer(question_body))
-    if len(matches) != 4:
+    if len(matches) != len(CHOICE_LABELS):
         raise ValueError("Khong tim du 4 lua chon A, B, C, D trong mot cau hoi.")
 
     prompt = question_body[: matches[0].start()].strip()
@@ -67,7 +74,7 @@ def _extract_options(question_body: str) -> tuple[str, dict[str, str]]:
         text = _compact_whitespace(match.group(2).replace("\n", " "))
         options[label] = text
 
-    missing = [label for label in "ABCD" if label not in options]
+    missing = [label for label in CHOICE_LABELS if label not in options]
     if missing:
         raise ValueError(f"Thieu lua chon: {', '.join(missing)}")
     return _compact_whitespace(prompt.replace("\n", " ")), options
@@ -88,6 +95,9 @@ def _extract_answer_map(answer_text: str) -> dict[int, tuple[list[str], str]]:
 
 
 def parse_quiz_text(raw_text: str, quiz_id: int, title: str | None = None) -> Quiz:
+    if quiz_id not in QUIZ_ID_RANGE:
+        raise ValueError(f"So bai chi duoc tu 1 den {QUIZ_SLOT_COUNT}.")
+
     text = _normalize_block(raw_text)
     parts = re.split(r"(?is)ANSWER KEY\s*&\s*EXPLANATIONS", text, maxsplit=1)
     if len(parts) != 2:
@@ -95,15 +105,20 @@ def parse_quiz_text(raw_text: str, quiz_id: int, title: str | None = None) -> Qu
 
     question_text, answer_text = parts[0], parts[1]
     sections = _extract_question_sections(question_text)
-    if len(sections) != 30:
-        raise ValueError(f"Can 30 cau hoi, parser dang tim thay {len(sections)} cau.")
+    if len(sections) != QUESTION_COUNT:
+        raise ValueError(f"Can {QUESTION_COUNT} cau hoi, parser dang tim thay {len(sections)} cau.")
 
     answer_map = _extract_answer_map(answer_text)
-    if len(answer_map) != 30:
-        raise ValueError(f"Can 30 dap an, parser dang tim thay {len(answer_map)} cau trong answer key.")
+    if len(answer_map) != QUESTION_COUNT:
+        raise ValueError(
+            f"Can {QUESTION_COUNT} dap an, parser dang tim thay {len(answer_map)} cau trong answer key."
+        )
 
     questions: list[Question] = []
-    for number, body in sections:
+    for expected_number, (number, body) in enumerate(sections, start=1):
+        if number != expected_number:
+            raise ValueError(f"Thu tu cau hoi khong dung: dang gap Question {number} thay vi {expected_number}.")
+
         prompt, options = _extract_options(body)
         if number not in answer_map:
             raise ValueError(f"Khong tim thay dap an cho cau {number}.")
@@ -146,13 +161,28 @@ def load_quiz(quiz_id: int) -> Quiz | None:
     )
 
 
-def list_available_quizzes() -> list[tuple[str, int]]:
+def quiz_slot_summary() -> list[dict[str, object]]:
     ensure_data_dirs()
-    quizzes = []
-    for path in sorted(QUIZ_DIR.glob("quiz_*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        quizzes.append((data["title"], int(data["quiz_id"])))
-    return quizzes
+    summary = []
+    for quiz_id in QUIZ_ID_RANGE:
+        quiz = load_quiz(quiz_id)
+        summary.append(
+            {
+                "quiz_id": quiz_id,
+                "title": quiz.title if quiz else f"Bai {quiz_id}",
+                "ready": quiz is not None,
+                "question_count": len(quiz.questions) if quiz else 0,
+            }
+        )
+    return summary
+
+
+def quiz_dropdown_choices() -> list[tuple[str, int]]:
+    choices = []
+    for item in quiz_slot_summary():
+        suffix = "San sang" if item["ready"] else "Chua import"
+        choices.append((f"Bai {item['quiz_id']} - {item['title']} ({suffix})", item["quiz_id"]))
+    return choices
 
 
 def load_wrong_answer_store() -> dict[str, list[int]]:
@@ -178,6 +208,28 @@ def record_wrong_answers(quiz_id: int, wrong_numbers: list[int]) -> None:
     save_wrong_answer_store(store)
 
 
+def clear_wrong_answers(quiz_id: int) -> None:
+    store = load_wrong_answer_store()
+    store[str(quiz_id)] = []
+    save_wrong_answer_store(store)
+
+
 def load_wrong_questions(quiz_id: int) -> list[int]:
     store = load_wrong_answer_store()
     return store.get(str(quiz_id), [])
+
+
+def build_progress_markdown() -> str:
+    lines = [
+        "# Tong quan 6 bai quiz",
+        "",
+    ]
+    for item in quiz_slot_summary():
+        wrong_count = len(load_wrong_questions(int(item["quiz_id"])))
+        lines.append(
+            f"- Bai {item['quiz_id']}: {item['title']} | "
+            f"{'San sang' if item['ready'] else 'Chua import'} | "
+            f"{item['question_count']}/{QUESTION_COUNT} cau | "
+            f"{wrong_count} cau dang can on"
+        )
+    return "\n".join(lines)
