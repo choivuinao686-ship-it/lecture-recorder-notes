@@ -109,6 +109,7 @@ Features:
 - saves wrong answers and supports review mode for mistakes
 - shows a progress dashboard for all 6 quizzes
 - lets you clear a quiz's saved wrong-answer list after review
+- includes a stop-and-grade button that scores only the questions already answered
 
 Run it locally:
 

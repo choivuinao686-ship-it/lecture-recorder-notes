@@ -132,7 +132,12 @@ def render_quiz(quiz_id: int, review_wrong_only: bool):
     return updates
 
 
-def submit_answers(quiz_id: int, review_wrong_only: bool, *answers) -> tuple[str, str, str]:
+def _grade_answers(
+    quiz_id: int,
+    review_wrong_only: bool,
+    partial_only: bool,
+    *answers,
+) -> tuple[str, str, str]:
     quiz, selected_questions = _selected_questions(quiz_id, review_wrong_only)
     if review_wrong_only and not selected_questions:
         raise gr.Error("Khong co cau sai nao de cham trong che do on lai.")
@@ -140,9 +145,16 @@ def submit_answers(quiz_id: int, review_wrong_only: bool, *answers) -> tuple[str
     result_lines = [f"# Ket qua {quiz.title}", ""]
     wrong_numbers: list[int] = []
     correct_count = 0
+    attempted_count = 0
+    skipped_numbers: list[int] = []
 
     for idx, question in enumerate(selected_questions):
         chosen = sorted(set(answers[idx] or []))
+        if partial_only and not chosen:
+            skipped_numbers.append(question.number)
+            continue
+
+        attempted_count += 1
         if set(chosen) == set(question.correct_answers):
             correct_count += 1
         else:
@@ -150,9 +162,17 @@ def submit_answers(quiz_id: int, review_wrong_only: bool, *answers) -> tuple[str
         result_lines.append(_question_block(question, chosen, show_result=True))
         result_lines.append("")
 
+    if partial_only and attempted_count == 0:
+        raise gr.Error("Ban chua chon dap an nao, nen app chua co gi de cham.")
+
     total = len(selected_questions)
-    score_line = f"Diem: {correct_count}/{total} ({(correct_count / total) * 100:.1f}%)"
+    denominator = attempted_count if partial_only else total
+    score_line = f"Diem: {correct_count}/{denominator} ({(correct_count / denominator) * 100:.1f}%)"
     summary = score_line
+    if partial_only:
+        summary += f"\nDa cham {attempted_count}/{total} cau da tra loi."
+        if skipped_numbers:
+            summary += f"\nBo qua: {', '.join(str(num) for num in skipped_numbers)}"
     if wrong_numbers:
         record_wrong_answers(quiz_id, wrong_numbers)
         summary += f"\nCau sai: {', '.join(str(num) for num in wrong_numbers)}"
@@ -170,6 +190,14 @@ def reset_review_list(quiz_id: int) -> tuple[str, str]:
         raise gr.Error("Bai nay chua duoc import nen khong co danh sach sai de xoa.")
     clear_wrong_answers(quiz_id)
     return f"Da xoa danh sach cau sai cua {quiz.title}.", build_progress_markdown()
+
+
+def submit_answers(quiz_id: int, review_wrong_only: bool, *answers) -> tuple[str, str, str]:
+    return _grade_answers(quiz_id, review_wrong_only, False, *answers)
+
+
+def stop_and_grade_answers(quiz_id: int, review_wrong_only: bool, *answers) -> tuple[str, str, str]:
+    return _grade_answers(quiz_id, review_wrong_only, True, *answers)
 
 
 ensure_data_dirs()
@@ -212,6 +240,7 @@ with gr.Blocks(title="Multiple Select Quiz App") as demo:
             load_button = gr.Button("Tai Bai")
             submit_button = gr.Button("Cham Bai", variant="primary")
             reset_wrong_button = gr.Button("Xoa danh sach cau sai")
+            stop_button = gr.Button("Dung va cham phan da lam")
         quiz_view = gr.Markdown()
         quiz_status = gr.Markdown()
         answer_components: list[gr.CheckboxGroup] = []
@@ -261,6 +290,11 @@ with gr.Blocks(title="Multiple Select Quiz App") as demo:
         fn=reset_review_list,
         inputs=[quiz_selector],
         outputs=[score_output, progress_output],
+    )
+    stop_button.click(
+        fn=stop_and_grade_answers,
+        inputs=[quiz_selector, review_wrong_only, *answer_components],
+        outputs=[score_output, result_view, progress_output],
     )
 
 
